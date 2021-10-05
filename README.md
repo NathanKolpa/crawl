@@ -12,7 +12,7 @@ Nathan Kolpa <nathan@kolpa.me>
 A simple cli webcrawler.
 
 USAGE:
-    crawl.exe [OPTIONS] <URL>
+    crawl [OPTIONS] <URL>
 
 FLAGS:
     -h, --help       Prints help information
