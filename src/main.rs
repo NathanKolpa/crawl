@@ -70,6 +70,16 @@ async fn crawl_link(
     if let Err(err) = res {
         eprintln!("error while fetching: {}", err);
     } else if let Ok(res) = res {
+
+        if let Some(content_type) = res.headers().get("Content-Type") {
+            if content_type != "text/html" && content_type != "application/html" {
+                return;
+            }
+        }
+        else {
+            return;
+        }
+
         let body = res.text().await;
 
         if let Err(err) = body {
