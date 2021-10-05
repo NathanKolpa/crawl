@@ -72,8 +72,10 @@ async fn crawl_link(
     } else if let Ok(res) = res {
 
         if let Some(content_type) = res.headers().get("Content-Type") {
-            if content_type != "text/html" && content_type != "application/html" {
-                return;
+            if let Ok(content_type) = content_type.to_str() {
+                if !content_type.starts_with("text/html") && content_type.starts_with("application/html") {
+                    return;
+                }
             }
         }
         else {
@@ -178,13 +180,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let user_agent = matches.value_of("user-agent").unwrap_or("Crawl");
 
     let max_depth: Option<i32> = if let Some(depth) = matches.value_of("max-depth") {
-        Some(depth.parse()?)
+        if depth == "none" {
+            None
+        }
+        else {
+            Some(depth.parse()?)
+        }
     } else {
         None
     };
 
     let max_origin_depth: Option<i32> = if let Some(depth) = matches.value_of("max-origin-depth") {
-        Some(depth.parse()?)
+        if depth == "none" {
+            None
+        }
+        else {
+            Some(depth.parse()?)
+        }
     } else {
         None
     };
