@@ -118,9 +118,9 @@ async fn crawl_link(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let matches = App::new("crawl")
-        .version("1.0")
+        .version(clap::crate_version!())
         .author("Nathan Kolpa <nathan@kolpa.me>")
-        .about("Crawl the web")
+        .about("A simple cli webcrawler.")
         .arg(
             Arg::with_name("url")
                 .value_name("URL")
