@@ -9,7 +9,7 @@ from `crawl --help`:
 ```text
 crawl 1.0
 Nathan Kolpa <nathan@kolpa.me>
-Crawl the web
+A simple cli webcrawler.
 
 USAGE:
     crawl.exe [OPTIONS] <URL>
