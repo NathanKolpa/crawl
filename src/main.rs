@@ -1,19 +1,19 @@
-use clap::{App, Arg};
-use futures::future::BoxFuture;
+use clap::{App, Arg, ArgMatches};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use reqwest::header::USER_AGENT;
 use reqwest::{Body, Client, Response};
-use select::document::Document;
 use select::predicate::Name;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::collections::VecDeque;
 use std::error::Error;
+use std::fmt::Debug;
+use select::document::Document;
 use std::option::Option::{None, Some};
-use std::pin::Pin;
+use robotstxt::DefaultMatcher;
 use std::result::Result::{Err, Ok};
 use std::sync::{Arc, Mutex};
-use url::Url;
+use url::{Origin, Url};
 
 struct QueuedLink {
     url: Url,
@@ -21,13 +21,18 @@ struct QueuedLink {
     origin_depth: i32,
 }
 
-fn get_links(base: &Url, html: &str) -> Vec<Url> {
-    let mut res = vec![];
+struct SiteData {
+    robots_body: Option<String>
+}
+
+fn get_links(base: &Url, html: &str) -> HashSet<Url> {
+    let mut urls: HashSet<Url> = Default::default();
 
     let dom = Document::from(html);
 
     for anchor in dom.find(Name("a")) {
         if let Some(href) = anchor.attr("href") {
+
             let url = if let Ok(url) = Url::parse(href) {
                 Some(url)
             } else if let Ok(url) = base.join(href) {
@@ -37,39 +42,100 @@ fn get_links(base: &Url, html: &str) -> Vec<Url> {
             };
 
             if let Some(url) = url {
-                res.push(url);
+                urls.insert(url);
             }
         }
     }
 
-    res
+    urls
+}
+
+fn is_correct_content_type(res: &Response) -> bool {
+    if let Some(content_type) = res.headers().get("Content-Type") {
+        if let Ok(content_type) = content_type.to_str() {
+            if !content_type.starts_with("text/html") && content_type.starts_with("application/html") {
+                return false;
+            }
+        }
+    } else {
+        return false;
+    }
+
+    true
 }
 
 async fn crawl_link(
     crawled_list: &Arc<Mutex<HashSet<Url>>>,
     link_queue: &Arc<Mutex<VecDeque<QueuedLink>>>,
+    site_data: &Arc<Mutex<HashMap<Origin, SiteData>>>,
+    start_url: &Url,
     user_agent: &str,
     max_depth: Option<i32>,
     max_origin_depth: Option<i32>,
+    send_head: bool,
+    only_subdirs: bool,
+    respect_robots: bool,
     client: &Client,
     current: QueuedLink,
 ) {
-    {
-        let mut crawled_list = crawled_list.lock().unwrap();
-        crawled_list.insert(current.url.clone());
+    if respect_robots {
+        let origin = current.url.origin();
+        let mut site_data = site_data.lock().unwrap();
+
+        if !site_data.contains_key(&origin) {
+            let robots_url = Url::parse(&origin.ascii_serialization()).unwrap().join("robots.txt").unwrap();
+
+            let res = client
+                .get(robots_url)
+                .header(USER_AGENT, user_agent)
+                .send()
+                .await;
+
+            let current_site_data = if let Ok(res) = res {// TODO: error logging
+                let body = res.text().await;
+
+                if let Ok(body) = body {
+                    SiteData {
+                        robots_body: Some(body)
+                    }
+                }
+                else {
+                    SiteData {
+                        robots_body: None
+                    }
+                }
+            } else {
+                SiteData {
+                    robots_body: None
+                }
+            };
+
+            site_data.insert(origin.clone(), current_site_data);
+        }
+
+        let site_data = site_data.get(&origin).unwrap();
+        let mut matcher = DefaultMatcher::default();
+
+        if let Some(robots_body) = &site_data.robots_body {
+            if !matcher.one_agent_allowed_by_robots(robots_body, user_agent, &current.url.to_string()) {
+                return;
+            }
+        }
     }
 
     println!("{}", current.url);
 
-    let head_res = client
-        .head(current.url.clone())
-        .header(USER_AGENT, user_agent)
-        .send()
-        .await;
+    if send_head {
+        let head_res = client
+            .head(current.url.clone())
+            .header(USER_AGENT, user_agent)
+            .send()
+            .await;
 
-    if let Ok(head_res) = head_res {
-        if !is_correct_content_type(&head_res) {
-            return;
+        if let Ok(head_res) = head_res {
+            if !is_correct_content_type(&head_res) {
+                return;
+            }
         }
     }
 
@@ -100,7 +166,7 @@ async fn crawl_link(
         if let Ok(body) = body {
             let new_links = get_links(&current.url, &body);
 
-            let crawled_list = crawled_list.lock().unwrap();
+            let mut crawled_list = crawled_list.lock().unwrap();
             let mut link_queue = link_queue.lock().unwrap();
 
             for new_link in new_links {
@@ -128,28 +194,22 @@ async fn crawl_link(
                     }
                 }
 
+                if only_subdirs {
+                    if new_link.origin() != current.url.origin() || !new_link.path().starts_with(start_url.path()) {
+                        continue
+                    }
+                }
+
                 link_queue.push_back(QueuedLink {
                     origin_depth,
                     url: new_link,
                     depth,
-                })
+                });
+
+                crawled_list.insert(current.url.clone());
             }
         }
     }
-}
-
-fn is_correct_content_type(res: &Response) -> bool {
-    if let Some(content_type) = res.headers().get("Content-Type") {
-        if let Ok(content_type) = content_type.to_str() {
-            if !content_type.starts_with("text/html") && content_type.starts_with("application/html") {
-                return false;
-            }
-        }
-    } else {
-        return false;
-    }
-
-    true
 }
 
 #[tokio::main]
@@ -172,13 +232,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .takes_value(true)
                 .default_value("Crawl")
                 .required(false)
-                .help("The user agent that will be sent along with every request"),
+                .value_name("text")
+                .help("The User-Agent header that will be sent along with every request"),
         )
         .arg(
             Arg::with_name("max-depth")
                 .short("d")
                 .long("max-depth")
                 .takes_value(true)
+                .value_name("number")
                 .required(false),
         )
         .arg(
@@ -187,6 +249,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .long("max-origin-depth")
                 .takes_value(true)
                 .required(false)
+                .value_name("number")
                 .default_value("1"),
         )
         .arg(
@@ -195,8 +258,42 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .required(false)
                 .short("j")
                 .long("jobs")
+                .value_name("number")
                 .help("The maximum amount of parallel jobs.")
                 .default_value("8"),
+        )
+        .arg(
+            Arg::with_name("send-head")
+                .required(false)
+                .takes_value(true)
+                .short("h")
+                .long("head")
+                .help("Send a HEAD request first before sending a GET request")
+                .default_value("true")
+                .value_name("boolean")
+                .possible_values(&["true", "false"])
+        )
+        .arg(
+            Arg::with_name("respect-robots")
+                .required(false)
+                .takes_value(true)
+                .short("r")
+                .long("respect-robots")
+                .help("Respect robots.txt")
+                .default_value("true")
+                .value_name("boolean")
+                .possible_values(&["true", "false"])
+        )
+        .arg(
+            Arg::with_name("only-subdirs")
+                .required(false)
+                .takes_value(true)
+                .short("s")
+                .long("only-subdirs")
+                .help("Crawl only sub directories from the URL")
+                .default_value("false")
+                .value_name("boolean")
+                .possible_values(&["true", "false"])
         )
         .get_matches();
 
@@ -232,12 +329,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         8
     };
 
+    let send_head = get_bool_arg("send-head", &matches, true);
+    let respect_robots = get_bool_arg("repsect-robots", &matches, true);
+    let only_subdirs  = get_bool_arg("only-subdirs", &matches, false);
+
     //
 
     let crawled_list: Arc<Mutex<HashSet<Url>>> = Default::default();
+    let site_data: Arc<Mutex<HashMap<Origin, SiteData>>> = Default::default();
     let link_queue: Arc<Mutex<VecDeque<QueuedLink>>> =
         Arc::new(Mutex::new(VecDeque::from(vec![QueuedLink {
-            url: start,
+            url: start.clone(),
             depth: 1,
             origin_depth: 1,
         }])));
@@ -248,7 +350,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     'outer: loop {
         while job_count >= max_jobs || (link_queue.lock().unwrap().len() <= 0 && job_count > 0) {
-            jobs.next().await;
+            jobs.next().await; // does not remove this future from jobs
             job_count -= 1;
         }
 
@@ -268,9 +370,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     jobs.push(crawl_link(
                         &crawled_list,
                         &link_queue,
+                        &site_data,
+                        &start,
                         &user_agent,
                         max_depth,
                         max_origin_depth,
+                        send_head,
+                        only_subdirs,
+                        respect_robots,
                         &client,
                         current,
                     ));
@@ -282,4 +389,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn get_bool_arg(name: &str, matches: &ArgMatches, default: bool) -> bool {
+    if let Some(send_head) = matches.value_of(name) {
+        if send_head == "true" {
+            true
+        } else {
+            false
+        }
+    } else {
+        default
+    }
 }
