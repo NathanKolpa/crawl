@@ -342,7 +342,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let send_head = get_bool_arg("send-head", &matches, true);
-    let respect_robots = get_bool_arg("repsect-robots", &matches, true);
+    let respect_robots = get_bool_arg("respect-robots", &matches, true);
     let only_subdirs  = get_bool_arg("only-subdirs", &matches, false);
 
     //
