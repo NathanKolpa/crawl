@@ -3,7 +3,7 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use reqwest::header::USER_AGENT;
-use reqwest::{Body, Client};
+use reqwest::{Body, Client, Response};
 use select::document::Document;
 use select::predicate::Name;
 use std::collections::HashSet;
@@ -61,6 +61,18 @@ async fn crawl_link(
 
     println!("{}", current.url);
 
+    let head_res = client
+        .head(current.url.clone())
+        .header(USER_AGENT, user_agent)
+        .send()
+        .await;
+
+    if let Ok(head_res) = head_res {
+        if !is_correct_content_type(&head_res) {
+            return;
+        }
+    }
+
     let res = client
         .get(current.url.clone())
         .header(USER_AGENT, user_agent)
@@ -69,16 +81,12 @@ async fn crawl_link(
 
     if let Err(err) = res {
         eprintln!("error while fetching: {}", err);
-    } else if let Ok(res) = res {
+        return;
+    }
 
-        if let Some(content_type) = res.headers().get("Content-Type") {
-            if let Ok(content_type) = content_type.to_str() {
-                if !content_type.starts_with("text/html") && content_type.starts_with("application/html") {
-                    return;
-                }
-            }
-        }
-        else {
+    if let Ok(res) = res {
+
+        if !is_correct_content_type(&res) {
             return;
         }
 
@@ -86,7 +94,10 @@ async fn crawl_link(
 
         if let Err(err) = body {
             eprintln!("error while receiving body: {}", err);
-        } else if let Ok(body) = body {
+            return;
+        }
+
+        if let Ok(body) = body {
             let new_links = get_links(&current.url, &body);
 
             let crawled_list = crawled_list.lock().unwrap();
@@ -125,6 +136,20 @@ async fn crawl_link(
             }
         }
     }
+}
+
+fn is_correct_content_type(res: &Response) -> bool {
+    if let Some(content_type) = res.headers().get("Content-Type") {
+        if let Ok(content_type) = content_type.to_str() {
+            if !content_type.starts_with("text/html") && content_type.starts_with("application/html") {
+                return false;
+            }
+        }
+    } else {
+        return false;
+    }
+
+    true
 }
 
 #[tokio::main]
