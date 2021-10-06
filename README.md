@@ -31,6 +31,5 @@ OPTIONS:
 
 ARGS:
     <URL>    The start url
-
 ```
 
