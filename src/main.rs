@@ -230,7 +230,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .short("u")
                 .long("user-agent")
                 .takes_value(true)
-                .default_value("Crawl")
+                .default_value("crawl")
                 .required(false)
                 .value_name("text")
                 .help("The User-Agent header that will be sent along with every request"),
@@ -299,7 +299,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let start = Url::parse(matches.value_of("url").unwrap())?;
 
-    let user_agent = matches.value_of("user-agent").unwrap_or("Crawl");
+    let user_agent = matches.value_of("user-agent").unwrap_or("crawl");
 
     let max_depth: Option<i32> = if let Some(depth) = matches.value_of("max-depth") {
         if depth == "none" {
