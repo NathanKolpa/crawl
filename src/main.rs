@@ -212,6 +212,18 @@ async fn crawl_link(
     }
 }
 
+fn get_bool_arg(name: &str, matches: &ArgMatches, default: bool) -> bool {
+    if let Some(send_head) = matches.value_of(name) {
+        if send_head == "true" {
+            true
+        } else {
+            false
+        }
+    } else {
+        default
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let matches = App::new("crawl")
@@ -389,16 +401,4 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
-}
-
-fn get_bool_arg(name: &str, matches: &ArgMatches, default: bool) -> bool {
-    if let Some(send_head) = matches.value_of(name) {
-        if send_head == "true" {
-            true
-        } else {
-            false
-        }
-    } else {
-        default
-    }
 }
