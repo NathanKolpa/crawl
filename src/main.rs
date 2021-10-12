@@ -200,13 +200,13 @@ async fn crawl_link(
                     }
                 }
 
+                crawled_list.insert(new_link.clone());
+                
                 link_queue.push_back(QueuedLink {
                     origin_depth,
                     url: new_link,
                     depth,
                 });
-
-                crawled_list.insert(current.url.clone());
             }
         }
     }
