@@ -347,7 +347,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     //
 
-    let crawled_list: Arc<Mutex<HashSet<Url>>> = Default::default();
+    let mut crawled_list: Arc<Mutex<HashSet<Url>>> = Default::default();
+    crawled_list.insert(start.clone());
+    
     let site_data: Arc<Mutex<HashMap<Origin, SiteData>>> = Default::default();
     let link_queue: Arc<Mutex<VecDeque<QueuedLink>>> =
         Arc::new(Mutex::new(VecDeque::from(vec![QueuedLink {
