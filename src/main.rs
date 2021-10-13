@@ -52,7 +52,7 @@ fn get_links(base: &Url, html: &str) -> HashSet<Url> {
 fn is_correct_content_type(res: &Response) -> bool {
     if let Some(content_type) = res.headers().get("Content-Type") {
         if let Ok(content_type) = content_type.to_str() {
-            if !content_type.starts_with("text/html") && content_type.starts_with("application/html") {
+            if !content_type.starts_with("text/html") && !content_type.starts_with("application/html") {
                 return false;
             }
         }
