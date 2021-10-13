@@ -2,12 +2,11 @@ use clap::{App, Arg, ArgMatches};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use reqwest::header::USER_AGENT;
-use reqwest::{Body, Client, Response};
+use reqwest::{Client, Response};
 use select::predicate::Name;
 use std::collections::{HashMap, HashSet};
 use std::collections::VecDeque;
 use std::error::Error;
-use std::fmt::Debug;
 use select::document::Document;
 use std::option::Option::{None, Some};
 use robotstxt::DefaultMatcher;
@@ -201,7 +200,7 @@ async fn crawl_link(
                 }
 
                 crawled_list.insert(new_link.clone());
-                
+
                 link_queue.push_back(QueuedLink {
                     origin_depth,
                     url: new_link,
@@ -252,7 +251,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .short("d")
                 .long("max-depth")
                 .takes_value(true)
-                .value_name("number")
+                .value_name("number|none")
                 .required(false),
         )
         .arg(
@@ -261,7 +260,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .long("max-origin-depth")
                 .takes_value(true)
                 .required(false)
-                .value_name("number")
+                .value_name("number|none")
                 .default_value("1"),
         )
         .arg(
@@ -280,7 +279,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .takes_value(true)
                 .short("h")
                 .long("head")
-                .help("Send a HEAD request first before sending a GET request")
+                .help("Send a HEAD request before sending a GET request")
                 .default_value("true")
                 .value_name("boolean")
                 .possible_values(&["true", "false"])
@@ -347,9 +346,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     //
 
-    let mut crawled_list: Arc<Mutex<HashSet<Url>>> = Default::default();
-    crawled_list.insert(start.clone());
-    
+    let crawled_list: Arc<Mutex<HashSet<Url>>> = Default::default();
+    crawled_list.lock().unwrap().insert(start.clone());
+
     let site_data: Arc<Mutex<HashMap<Origin, SiteData>>> = Default::default();
     let link_queue: Arc<Mutex<VecDeque<QueuedLink>>> =
         Arc::new(Mutex::new(VecDeque::from(vec![QueuedLink {
