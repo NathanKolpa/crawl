@@ -3,8 +3,8 @@ use reqwest::ClientBuilder;
 use std::error::Error;
 use url::Url;
 
-use crate::crawler::{Crawler, CrawlerError};
-use crate::error::CliError;
+use crate::crawler::Crawler;
+use crate::error::{CliError, CrawlerError};
 use crate::queue::CrawlerQueue;
 use crate::rules::CrawlerRules;
 use crate::scheduler::{CrawlerMessage, Scheduler};
@@ -69,17 +69,11 @@ fn main() -> Result<(), CliError> {
 
     let on_crawl = |message: CrawlerMessage| match message {
         CrawlerMessage::UrlFound(url) => println!("{url}"),
-        CrawlerMessage::Error(url, err) => match err {
-            CrawlerError::CannotSendRequest(e) => {
-                eprint!("Failed to send request to {url}");
-
-                match e.source().and_then(|x| x.source()) {
-                    Some(e) => eprintln!(" ({e})"),
-                    _ => eprintln!(),
-                }
+        CrawlerMessage::Error(err) => {
+            if err.is_cli_relevant() {
+                eprintln!("{err}")
             }
-            _ => {}
-        },
+        }
     };
 
     let mut scheduler = Scheduler::new(queue, crawler, cli.jobs, on_crawl);

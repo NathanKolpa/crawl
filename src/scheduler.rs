@@ -3,13 +3,14 @@ use futures::join;
 use tokio::sync::mpsc;
 use url::Url;
 
-use crate::crawler::{Crawler, CrawlerError};
+use crate::crawler::Crawler;
+use crate::error::CrawlerError;
 use crate::queue::CrawlerQueue;
 use crate::rules::CrawledUrl;
 
 pub enum CrawlerMessage<'a> {
     UrlFound(&'a Url),
-    Error(&'a Url, CrawlerError),
+    Error(CrawlerError),
 }
 
 enum MasterMessage {
@@ -18,7 +19,7 @@ enum MasterMessage {
 
 enum WorkerMessage {
     Success(Vec<CrawledUrl>),
-    Failure(CrawlerError, Url),
+    Failure(CrawlerError),
 }
 
 struct WorkerHandle {
@@ -73,12 +74,14 @@ impl<T: FnMut(CrawlerMessage)> Scheduler<'_, T> {
 
             // Dispatching a new job won't do anything, instead we wait for messages.
             if (!has_next_url || active_workers == self.max_jobs) && active_workers != 0 {
-                let worker_recvs = workers.iter_mut().enumerate().filter(|(_, x)| x.is_working).map(|(i, x)| {
-                    // TODO: can we remove this box pin?
-                    Box::pin(async move {
-                        (x.rx.recv().await, i)
-                    })
-                });
+                let worker_recvs = workers
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|(_, x)| x.is_working)
+                    .map(|(i, x)| {
+                        // TODO: can we remove this box pin?
+                        Box::pin(async move { (x.rx.recv().await, i) })
+                    });
 
                 let ((message, i), _, _remaining) = select_all(worker_recvs).await;
                 drop(_remaining);
@@ -91,9 +94,7 @@ impl<T: FnMut(CrawlerMessage)> Scheduler<'_, T> {
                     WorkerMessage::Success(urls) => {
                         self.queue.check_and_queue_iter(urls.into_iter());
                     }
-                    WorkerMessage::Failure(e, url) => {
-                        (self.callback)(CrawlerMessage::Error(&url, e))
-                    }
+                    WorkerMessage::Failure(e) => (self.callback)(CrawlerMessage::Error(e)),
                 }
             }
         }
@@ -112,7 +113,7 @@ impl<T: FnMut(CrawlerMessage)> Scheduler<'_, T> {
 
                     match result {
                         Ok(urls) => tx.send(WorkerMessage::Success(urls)).await.unwrap(),
-                        Err(e) => tx.send(WorkerMessage::Failure(e, url.url)).await.unwrap(),
+                        Err(e) => tx.send(WorkerMessage::Failure(e)).await.unwrap(),
                     }
                 }
             }

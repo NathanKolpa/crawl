@@ -1,18 +1,12 @@
 use std::str::FromStr;
 
+use crate::error::CrawlerError;
 use html5ever::tendril::StrTendril;
-use html5ever::tokenizer::{
-    BufferQueue, StartTag, Token, TokenSink, TokenSinkResult, Tokenizer,
-};
+use html5ever::tokenizer::{BufferQueue, StartTag, Token, TokenSink, TokenSinkResult, Tokenizer};
 use reqwest::Client;
 use url::Url;
 
 use crate::rules::{CrawledUrl, CrawlerRules};
-
-pub enum CrawlerError {
-    CannotSendRequest(reqwest::Error),
-    InvalidContentType(String),
-}
 
 struct LinkSink<'a> {
     parent: &'a CrawledUrl,
@@ -36,7 +30,7 @@ impl TokenSink for LinkSink<'_> {
 
         match token {
             Token::TagToken(tag) => {
-                if tag.kind == StartTag && tag.name.eq("a") {
+                if tag.kind == StartTag && (tag.name.eq("a") || tag.name.eq("atom:link")) {
                     if let Some(href) = tag.attrs.into_iter().find(|x| x.name.local.eq("href")) {
                         add_url(href.value.to_string().as_str());
                     }

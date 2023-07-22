@@ -16,7 +16,11 @@ pub struct CrawlerQueue {
 }
 
 impl CrawlerQueue {
-    pub fn new(require_robots: bool, max_origin_depth: Option<u32>, max_depth: Option<u32>) -> Self {
+    pub fn new(
+        require_robots: bool,
+        max_origin_depth: Option<u32>,
+        max_depth: Option<u32>,
+    ) -> Self {
         Self {
             queue: Default::default(),
             crawled: Default::default(),
@@ -52,9 +56,7 @@ impl CrawlerQueue {
             }
         }
 
-        if let Some(max_depth) = self.max_depth {
-
-        }
+        if let Some(max_depth) = self.max_depth {}
 
         self.crawled.insert(url.url.clone());
         self.queue.push_back(url);
