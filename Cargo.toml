@@ -1,16 +1,11 @@
 [package]
 name = "crawl"
-version = "1.0.0"
-authors = ["Nathan Kolpa <nathan@kolpa.me>"]
+version = "1.1.0"
+authors = ["Nathan Kolpa"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-reqwest = "0.11.4"
-tokio = { version = "1.12.0", features = ["full"]  }
-url = "2.2.2"
-select = "0.5.0"
-futures = "0.3.17"
-clap = "2.33.3"
-robotstxt = "0.3.0"
+url = "2.4.0"
+clap = { version = "4.3", features = ["derive"] }
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
+futures = { version = "0.3.28" }
