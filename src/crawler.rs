@@ -48,18 +48,21 @@ impl<'a, T> Crawler<'a, T> {
             max_jobs,
         }
     }
+
+    async fn crawl_url(url: &CrawledUrl) -> Result<Vec<CrawledUrl>, CrawlError> {
+        let urls = Vec::new();
+
+        Ok(urls)
+    }
 }
 
 impl<T: FnMut(CrawlerMessage)> Crawler<'_, T> {
     async fn start_master(&mut self, mut workers: Vec<WorkerHandle>) {
-        println!("Master: starting");
-
         let mut active_workers = 0;
 
         while self.queue.len() > 0 || active_workers > 0 {
             // Dispatch a new job if there is work to do.
             if let Some(url) = self.queue.pop_back() {
-                println!("Master: dispatching new job");
 
                 // Do a linear scan for a free worker.
                 let free_worker = workers.iter_mut().find(|x| !x.is_working);
@@ -67,18 +70,15 @@ impl<T: FnMut(CrawlerMessage)> Crawler<'_, T> {
                 match free_worker {
                     None => {}
                     Some(worker) => {
-                        println!("Master: dispatching to worker");
                         active_workers += 1;
                         worker.is_working = true;
                         worker.tx.send(MasterMessage::NewUrl(url)).await.unwrap();
-                        println!("Master: dispatching complete");
                     }
                 }
             }
 
             // Dispatching a new job won't do anything, instead we wait for messages.
             if (self.queue.len() == 0 || active_workers == self.max_jobs) && active_workers != 0 {
-                println!("Master: waiting for message");
                 let worker_recvs = workers.iter_mut()
                     .filter(|x| x.is_working)
                     .map(|x| {
@@ -88,8 +88,6 @@ impl<T: FnMut(CrawlerMessage)> Crawler<'_, T> {
                 let (message, i, _remaining) = select_all(worker_recvs).await;
                 drop(_remaining);
                 let message = message.unwrap();
-
-                println!("Master: received message");
 
                 match message {
                     WorkerMessage::Success(urls) => {
@@ -104,26 +102,14 @@ impl<T: FnMut(CrawlerMessage)> Crawler<'_, T> {
                 }
             }
         }
-
-        println!("Master: done");
-    }
-
-    async fn crawl_url(url: &CrawledUrl) -> Result<Vec<CrawledUrl>, CrawlError> {
-        let urls = Vec::new();
-
-        Ok(urls)
     }
 
     async fn start_worker(tx: mpsc::Sender<WorkerMessage>, mut rx: mpsc::Receiver<MasterMessage>) {
-        println!("Worker: starting");
-
         loop {
             match rx.recv().await {
                 None => break,
                 Some(MasterMessage::NewUrl(url)) => {
-                    println!("Worker: started crawling");
                     let result = Self::crawl_url(&url).await;
-                    println!("Worker: completed crawling");
 
                     match result {
                         Ok(urls) => tx.send(WorkerMessage::Success(urls)).await.unwrap(),
@@ -132,8 +118,6 @@ impl<T: FnMut(CrawlerMessage)> Crawler<'_, T> {
                 }
             }
         }
-
-        println!("Worker: done");
     }
 
     pub async fn start(&mut self, roots: Vec<Url>) {
