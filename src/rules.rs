@@ -20,15 +20,29 @@ impl CrawledUrl {
 
 #[derive(Clone)]
 pub struct CrawlerRules<'a> {
-    pub parent_dirs: bool,
-    pub ignore_robots: bool,
-    pub max_origin_depth: Option<u32>,
-    pub max_depth: Option<u32>,
+    pub only_subdirs: bool,
     pub roots: &'a [Url],
 }
 
 impl CrawlerRules<'_> {
     pub fn matches(&self, url: &Url) -> bool {
+        if self.only_subdirs {
+            let is_subdir_of_root = self
+                .roots
+                .iter()
+                .find(|root| {
+                    root.scheme() == url.scheme()
+                        && root.port() == url.port()
+                        && root.host_str() == url.host_str()
+                        && url.path().starts_with(root.path())
+                })
+                .is_some();
+
+            if !is_subdir_of_root {
+                return false;
+            }
+        }
+
         true
     }
 }

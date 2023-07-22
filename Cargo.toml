@@ -6,6 +6,8 @@ edition = "2018"
 
 [dependencies]
 url = "2.4.0"
-clap = { version = "4.3", features = ["derive"] }
+clap = { version = "4.3", features = ["derive", "color"] }
 tokio = { version = "1", features = ["rt", "macros", "sync"] }
 futures = { version = "0.3.28" }
+html5ever = "0.26.0"
+reqwest = "0.11.18"

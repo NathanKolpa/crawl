@@ -1,161 +1,108 @@
-use std::cmp::min;
-use std::collections::VecDeque;
-use std::pin::pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::str::FromStr;
 
-use futures::future::{join_all, select_all};
-use futures::join;
-use tokio::select;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use html5ever::tendril::StrTendril;
+use html5ever::tokenizer::{
+    BufferQueue, StartTag, Token, TokenSink, TokenSinkResult, Tokenizer,
+};
+use reqwest::Client;
 use url::Url;
 
 use crate::rules::{CrawledUrl, CrawlerRules};
 
-pub enum CrawlerMessage<'a> {
-    UrlFound(&'a Url),
+pub enum CrawlerError {
+    CannotSendRequest(reqwest::Error),
+    InvalidContentType(String),
 }
 
-enum MasterMessage {
-    NewUrl(CrawledUrl)
+struct LinkSink<'a> {
+    parent: &'a CrawledUrl,
+    links: Vec<CrawledUrl>,
 }
 
-enum WorkerMessage {
-    Success(Vec<CrawledUrl>),
+impl TokenSink for LinkSink<'_> {
+    type Handle = ();
+
+    fn process_token(&mut self, token: Token, _line_number: u64) -> TokenSinkResult<Self::Handle> {
+        let mut add_url = |s: &str| {
+            let url = Url::options().base_url(Some(&self.parent.url)).parse(s);
+
+            if let Ok(url) = url {
+                match url.scheme() {
+                    "http" | "https" => self.links.push(self.parent.push_new(url)),
+                    _ => {}
+                }
+            }
+        };
+
+        match token {
+            Token::TagToken(tag) => {
+                if tag.kind == StartTag && tag.name.eq("a") {
+                    if let Some(href) = tag.attrs.into_iter().find(|x| x.name.local.eq("href")) {
+                        add_url(href.value.to_string().as_str());
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        TokenSinkResult::Continue
+    }
 }
 
-struct WorkerHandle {
-    tx: mpsc::Sender<MasterMessage>,
-    rx: mpsc::Receiver<WorkerMessage>,
-    is_working: bool,
-}
-
-
-pub enum CrawlError {}
-
-pub struct Crawler<'a, T> {
+#[derive(Clone)]
+pub struct Crawler<'a> {
     rules: CrawlerRules<'a>,
-    queue: VecDeque<CrawledUrl>,
-    callback: T,
-    max_jobs: usize,
+    client: &'a Client,
 }
 
-impl<'a, T> Crawler<'a, T> {
-    pub fn new(rules: CrawlerRules<'a>, max_jobs: usize, callback: T) -> Self {
-        Self {
-            rules,
-            queue: Default::default(),
-            callback,
-            max_jobs,
-        }
-    }
-
-    async fn crawl_url(url: &CrawledUrl) -> Result<Vec<CrawledUrl>, CrawlError> {
-        let urls = Vec::new();
-
-        Ok(urls)
+impl<'a> Crawler<'a> {
+    pub fn new(rules: CrawlerRules<'a>, client: &'a Client) -> Self {
+        Self { rules, client }
     }
 }
 
-impl<T: FnMut(CrawlerMessage)> Crawler<'_, T> {
-    async fn start_master(&mut self, mut workers: Vec<WorkerHandle>) {
-        let mut active_workers = 0;
+impl Crawler<'_> {
+    pub async fn crawl_url(&self, url: &CrawledUrl) -> Result<Vec<CrawledUrl>, CrawlerError> {
+        let res = self
+            .client
+            .get(url.url.as_str())
+            .send()
+            .await
+            .map_err(|e| CrawlerError::CannotSendRequest(e))?;
 
-        while self.queue.len() > 0 || active_workers > 0 {
-            // Dispatch a new job if there is work to do.
-            if let Some(url) = self.queue.pop_back() {
-
-                // Do a linear scan for a free worker.
-                let free_worker = workers.iter_mut().find(|x| !x.is_working);
-
-                match free_worker {
-                    None => {}
-                    Some(worker) => {
-                        active_workers += 1;
-                        worker.is_working = true;
-                        worker.tx.send(MasterMessage::NewUrl(url)).await.unwrap();
-                    }
-                }
-            }
-
-            // Dispatching a new job won't do anything, instead we wait for messages.
-            if (self.queue.len() == 0 || active_workers == self.max_jobs) && active_workers != 0 {
-                let worker_recvs = workers.iter_mut()
-                    .filter(|x| x.is_working)
-                    .map(|x| {
-                        Box::pin(x.rx.recv()) // TODO: can we remove this box pin?
-                    });
-
-                let (message, i, _remaining) = select_all(worker_recvs).await;
-                drop(_remaining);
-                let message = message.unwrap();
-
-                match message {
-                    WorkerMessage::Success(urls) => {
-                        workers[i].is_working = false;
-                        active_workers -= 1;
-                        self.queue.reserve(urls.len());
-
-                        for url in urls {
-                            self.queue.push_back(url);
-                        }
-                    }
-                }
+        if let Some(content_type) = res
+            .headers()
+            .get("Content-Type")
+            .and_then(|s| s.to_str().ok())
+        {
+            match content_type {
+                s if s.starts_with("text/html") => {}
+                s if s.starts_with("application/html") => {}
+                s if s.starts_with("application/xml") => {}
+                s if s.starts_with("text/xml") => {}
+                s => return Err(CrawlerError::InvalidContentType(s.to_string())),
             }
         }
-    }
 
-    async fn start_worker(tx: mpsc::Sender<WorkerMessage>, mut rx: mpsc::Receiver<MasterMessage>) {
-        loop {
-            match rx.recv().await {
-                None => break,
-                Some(MasterMessage::NewUrl(url)) => {
-                    let result = Self::crawl_url(&url).await;
+        let body = res
+            .text()
+            .await
+            .map_err(|e| CrawlerError::CannotSendRequest(e))?;
 
-                    match result {
-                        Ok(urls) => tx.send(WorkerMessage::Success(urls)).await.unwrap(),
-                        Err(_) => todo!()
-                    }
-                }
-            }
-        }
-    }
+        let links = LinkSink {
+            links: Default::default(),
+            parent: url,
+        };
 
-    pub async fn start(&mut self, roots: Vec<Url>) {
-        self.queue.reserve(roots.len());
+        let mut body_queue = BufferQueue::new();
+        body_queue.push_back(StrTendril::from_str(&body).unwrap());
 
-        for url in roots {
-            self.queue.push_back(CrawledUrl {
-                url,
-                depth: 0,
-                origin_depth: 0,
-            });
-        }
+        let mut tokenizer = Tokenizer::new(links, Default::default());
+        let _ = tokenizer.feed(&mut body_queue);
+        tokenizer.end();
 
-        let workers = (0..self.max_jobs).map(|_| {
-            let (master_tx, master_rx) = mpsc::channel::<MasterMessage>(1);
-            let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>(1);
-
-            (WorkerHandle {
-                is_working: false,
-                rx: worker_rx,
-                tx: master_tx,
-            }, Self::start_worker(worker_tx, master_rx))
-        });
-
-        let mut worker_futures = Vec::with_capacity(workers.len());
-        let mut worker_channels = Vec::with_capacity(workers.len());
-
-        for worker in workers {
-            worker_futures.push(worker.1);
-            worker_channels.push(worker.0);
-        }
-
-        let worker_handle = join_all(worker_futures);
-        let master_handle = self.start_master(worker_channels);
-
-        join!(
-            worker_handle,
-            master_handle
-        );
+        let mut links = tokenizer.sink.links;
+        links.retain(|x| self.rules.matches(&x.url));
+        Ok(links)
     }
 }
