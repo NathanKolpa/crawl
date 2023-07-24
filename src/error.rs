@@ -15,7 +15,6 @@ impl Debug for CliError {
 
 pub enum CrawlerError {
     CannotSendRequest(reqwest::Error),
-    InvalidContentType(String),
 }
 
 impl Display for CrawlerError {
@@ -30,20 +29,8 @@ impl Display for CrawlerError {
                     write!(f, " ({inner})")?;
                 }
             }
-            CrawlerError::InvalidContentType(e) => {
-                write!(f, "Invalid content type ({e})")?;
-            }
         }
 
         Ok(())
-    }
-}
-
-impl CrawlerError {
-    pub fn is_cli_relevant(&self) -> bool {
-        match self {
-            CrawlerError::InvalidContentType(_) => false,
-            _ => true,
-        }
     }
 }

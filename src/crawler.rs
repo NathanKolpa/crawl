@@ -74,7 +74,7 @@ impl Crawler<'_> {
                 s if s.starts_with("application/html") => {}
                 s if s.starts_with("application/xml") => {}
                 s if s.starts_with("text/xml") => {}
-                s => return Err(CrawlerError::InvalidContentType(s.to_string())),
+                _ => return Ok(Vec::new()),
             }
         }
 

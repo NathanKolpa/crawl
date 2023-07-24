@@ -69,11 +69,7 @@ fn main() -> Result<(), CliError> {
 
     let on_crawl = |message: CrawlerMessage| match message {
         CrawlerMessage::UrlFound(url) => println!("{url}"),
-        CrawlerMessage::Error(err) => {
-            if err.is_cli_relevant() {
-                eprintln!("{err}")
-            }
-        }
+        CrawlerMessage::Error(err) => eprintln!("{err}"),
     };
 
     let mut scheduler = Scheduler::new(queue, crawler, cli.jobs, on_crawl);
