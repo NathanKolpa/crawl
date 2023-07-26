@@ -19,24 +19,31 @@ impl CrawledUrl {
 }
 
 #[derive(Clone)]
-pub struct CrawlerRules<'a> {
+pub struct UrlFilterRules {
     pub only_subdirs: bool,
-    pub roots: &'a [Url],
 }
 
-impl CrawlerRules<'_> {
+#[derive(Clone)]
+pub struct UrlFilter<'a> {
+    rules: UrlFilterRules,
+    roots: &'a [Url],
+}
+
+impl<'a> UrlFilter<'a> {
+    pub fn new(rules: UrlFilterRules, roots: &'a [Url]) -> Self {
+        Self { rules, roots }
+    }
+}
+
+impl UrlFilter<'_> {
     pub fn matches(&self, url: &Url) -> bool {
-        if self.only_subdirs {
-            let is_subdir_of_root = self
-                .roots
-                .iter()
-                .find(|root| {
-                    root.scheme() == url.scheme()
-                        && root.port() == url.port()
-                        && root.host_str() == url.host_str()
-                        && url.path().starts_with(root.path())
-                })
-                .is_some();
+        if self.rules.only_subdirs {
+            let is_subdir_of_root = self.roots.iter().any(|root| {
+                root.scheme() == url.scheme()
+                    && root.port() == url.port()
+                    && root.host_str() == url.host_str()
+                    && url.path().starts_with(root.path())
+            });
 
             if !is_subdir_of_root {
                 return false;

@@ -1,25 +1,12 @@
 use clap::Parser;
-use reqwest::ClientBuilder;
-use std::error::Error;
+use crawl::*;
 use url::Url;
-
-use crate::crawler::Crawler;
-use crate::error::{CliError, CrawlerError};
-use crate::queue::CrawlerQueue;
-use crate::rules::CrawlerRules;
-use crate::scheduler::{CrawlerMessage, Scheduler};
-
-mod crawler;
-mod error;
-mod queue;
-mod rules;
-mod scheduler;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     #[arg(required = true)]
-    url: Vec<Url>,
+    urls: Vec<Url>,
 
     /// Specify the concurrently running jobs.
     /// Running multiple jobs comes with little overhead and no additional threads are created.
@@ -51,35 +38,46 @@ struct Cli {
     non_conforming: bool,
 }
 
-fn main() -> Result<(), CliError> {
-    let cli = Cli::parse();
+pub enum CliError {
+    CreateRuntimeError(std::io::Error),
+}
 
-    let rules = CrawlerRules {
-        only_subdirs: !cli.allow_non_subdirectories,
-        roots: &cli.url,
-    };
+impl std::fmt::Debug for CliError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CliError::CreateRuntimeError(e) => write!(f, "Cannot create tokio runtime: {e}"),
+        }
+    }
+}
 
-    let client = ClientBuilder::new()
-        .user_agent(cli.user_agent)
-        .build()
-        .unwrap();
-
-    let crawler = Crawler::new(rules, &client);
-    let queue = CrawlerQueue::new(false, cli.max_origin_depth, cli.max_depth);
-
+async fn run(args: Cli) -> Result<(), CliError> {
     let on_crawl = |message: CrawlerMessage| match message {
         CrawlerMessage::UrlFound(url) => println!("{url}"),
         CrawlerMessage::Error(err) => eprintln!("{err}"),
     };
 
-    let mut scheduler = Scheduler::new(queue, crawler, cli.jobs, on_crawl);
+    let mut crawler = Crawler::new(
+        &args.user_agent,
+        false,
+        !args.allow_non_subdirectories,
+        args.max_depth,
+        args.max_origin_depth,
+        args.jobs,
+        on_crawl,
+    );
+
+    crawler.start(args.urls).await;
+
+    Ok(())
+}
+
+fn main() -> Result<(), CliError> {
+    let cli = Cli::parse();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| CliError::CreateRuntimeError(e))?;
+        .map_err(CliError::CreateRuntimeError)?;
 
-    runtime.block_on(scheduler.start(cli.url.clone()));
-
-    Ok(())
+    runtime.block_on(run(cli))
 }

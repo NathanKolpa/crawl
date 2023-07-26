@@ -1,102 +1,169 @@
-use std::str::FromStr;
-
-use crate::error::CrawlerError;
-use html5ever::tendril::StrTendril;
-use html5ever::tokenizer::{BufferQueue, StartTag, Token, TokenSink, TokenSinkResult, Tokenizer};
-use reqwest::Client;
+use futures::future::{join_all, select_all};
+use futures::join;
+use reqwest::{Client, ClientBuilder};
+use tokio::sync::mpsc;
 use url::Url;
 
-use crate::rules::{CrawledUrl, CrawlerRules};
+use crate::error::CrawlerError;
+use crate::fetching::LinkFetcher;
+use crate::filter::{CrawledUrl, UrlFilter, UrlFilterRules};
+use crate::queue::CrawlerQueue;
 
-struct LinkSink<'a> {
-    parent: &'a CrawledUrl,
-    links: Vec<CrawledUrl>,
+pub enum CrawlerMessage<'a> {
+    UrlFound(&'a Url),
+    Error(CrawlerError),
 }
 
-impl TokenSink for LinkSink<'_> {
-    type Handle = ();
+enum MasterMessage {
+    NewUrl(CrawledUrl),
+}
 
-    fn process_token(&mut self, token: Token, _line_number: u64) -> TokenSinkResult<Self::Handle> {
-        let mut add_url = |s: &str| {
-            let url = Url::options().base_url(Some(&self.parent.url)).parse(s);
+enum WorkerMessage {
+    Success(Vec<CrawledUrl>),
+    Failure(CrawlerError),
+}
 
-            if let Ok(url) = url {
-                match url.scheme() {
-                    "http" | "https" => self.links.push(self.parent.push_new(url)),
-                    _ => {}
-                }
-            }
-        };
+struct WorkerHandle {
+    tx: mpsc::Sender<MasterMessage>,
+    rx: mpsc::Receiver<WorkerMessage>,
+    is_working: bool,
+}
 
-        match token {
-            Token::TagToken(tag) => {
-                if tag.kind == StartTag && (tag.name.eq("a") || tag.name.eq("atom:link")) {
-                    if let Some(href) = tag.attrs.into_iter().find(|x| x.name.local.eq("href")) {
-                        add_url(href.value.to_string().as_str());
+/// Handles all concurrency and synchronization beween crawling jobs.
+pub struct Crawler<T> {
+    http_client: Client,
+    queue: CrawlerQueue,
+    callback: T,
+    max_jobs: usize,
+    filter: UrlFilterRules,
+}
+
+impl<T> Crawler<T> {
+    pub fn new(
+        user_agent: &str,
+        require_robots: bool,
+        only_subdirs: bool,
+        max_origin_depth: Option<u32>,
+        max_depth: Option<u32>,
+        max_jobs: usize,
+        callback: T,
+    ) -> Self {
+        Self {
+            filter: UrlFilterRules { only_subdirs },
+            http_client: ClientBuilder::new().user_agent(user_agent).build().unwrap(),
+            queue: CrawlerQueue::new(require_robots, max_origin_depth, max_depth),
+            callback,
+            max_jobs,
+        }
+    }
+}
+
+impl<T: FnMut(CrawlerMessage)> Crawler<T> {
+    async fn start_master(&mut self, mut workers: Vec<WorkerHandle>, rules: UrlFilter<'_>) {
+        let mut active_workers = 0;
+
+        // TODO: len() does not give the correct behaviour
+        while !self.queue.is_empty() || active_workers > 0 {
+            let next_url = self.queue.take();
+            let has_next_url = next_url.is_some();
+
+            // Dispatch a new job if there is work to do.
+            if let Some(url) = next_url {
+                // Do a linear scan for a free worker.
+                let free_worker = workers.iter_mut().find(|x| !x.is_working);
+
+                match free_worker {
+                    None => {} // Oh no, a labour shortage!
+                    Some(worker) => {
+                        active_workers += 1;
+                        worker.is_working = true;
+                        (self.callback)(CrawlerMessage::UrlFound(&url.url));
+                        worker.tx.send(MasterMessage::NewUrl(url)).await.unwrap();
                     }
                 }
             }
-            _ => {}
-        }
 
-        TokenSinkResult::Continue
-    }
-}
+            // Dispatching a new job won't do anything, instead we wait for messages.
+            if (!has_next_url || active_workers == self.max_jobs) && active_workers != 0 {
+                let worker_recvs = workers
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|(_, x)| x.is_working)
+                    .map(|(i, x)| {
+                        // TODO: can we remove this box pin?
+                        Box::pin(async move { (x.rx.recv().await, i) })
+                    });
 
-#[derive(Clone)]
-pub struct Crawler<'a> {
-    rules: CrawlerRules<'a>,
-    client: &'a Client,
-}
+                let ((message, i), _, _remaining) = select_all(worker_recvs).await;
+                drop(_remaining);
+                let message = message.unwrap();
 
-impl<'a> Crawler<'a> {
-    pub fn new(rules: CrawlerRules<'a>, client: &'a Client) -> Self {
-        Self { rules, client }
-    }
-}
+                workers[i].is_working = false;
+                active_workers -= 1;
 
-impl Crawler<'_> {
-    pub async fn crawl_url(&self, url: &CrawledUrl) -> Result<Vec<CrawledUrl>, CrawlerError> {
-        let res = self
-            .client
-            .get(url.url.as_str())
-            .send()
-            .await
-            .map_err(|e| CrawlerError::CannotSendRequest(e))?;
-
-        if let Some(content_type) = res
-            .headers()
-            .get("Content-Type")
-            .and_then(|s| s.to_str().ok())
-        {
-            match content_type {
-                s if s.starts_with("text/html") => {}
-                s if s.starts_with("application/html") => {}
-                s if s.starts_with("application/xml") => {}
-                s if s.starts_with("text/xml") => {}
-                _ => return Ok(Vec::new()),
+                match message {
+                    WorkerMessage::Success(mut urls) => {
+                        urls.retain(|url| rules.matches(&url.url));
+                        self.queue.check_and_queue_iter(urls.into_iter());
+                    }
+                    WorkerMessage::Failure(e) => (self.callback)(CrawlerMessage::Error(e)),
+                }
             }
         }
+    }
 
-        let body = res
-            .text()
-            .await
-            .map_err(|e| CrawlerError::CannotSendRequest(e))?;
+    async fn start_worker(
+        http_client: &Client,
+        tx: mpsc::Sender<WorkerMessage>,
+        mut rx: mpsc::Receiver<MasterMessage>,
+    ) {
+        let link_fetcher = LinkFetcher::new(http_client);
 
-        let links = LinkSink {
-            links: Default::default(),
-            parent: url,
-        };
+        loop {
+            match rx.recv().await {
+                None => break,
+                Some(MasterMessage::NewUrl(url)) => {
+                    let result = link_fetcher.fetch_links(&url).await;
 
-        let mut body_queue = BufferQueue::new();
-        body_queue.push_back(StrTendril::from_str(&body).unwrap());
+                    match result {
+                        Ok(urls) => tx.send(WorkerMessage::Success(urls)).await.unwrap(),
+                        Err(e) => tx.send(WorkerMessage::Failure(e)).await.unwrap(),
+                    }
+                }
+            }
+        }
+    }
 
-        let mut tokenizer = Tokenizer::new(links, Default::default());
-        let _ = tokenizer.feed(&mut body_queue);
-        tokenizer.end();
+    pub async fn start(&mut self, roots: Vec<Url>) {
+        self.queue
+            .check_and_queue_iter(roots.clone().into_iter().map(|url| CrawledUrl {
+                url,
+                depth: 0,
+                origin_depth: 0,
+            }));
 
-        let mut links = tokenizer.sink.links;
-        links.retain(|x| self.rules.matches(&x.url));
-        Ok(links)
+        let client = self.http_client.clone();
+
+        let mut worker_futures = Vec::with_capacity(self.max_jobs);
+        let mut worker_channels = Vec::with_capacity(self.max_jobs);
+
+        for _ in 0..self.max_jobs {
+            let (master_tx, master_rx) = mpsc::channel::<MasterMessage>(1);
+            let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>(1);
+
+            worker_futures.push(Self::start_worker(&client, worker_tx, master_rx));
+
+            worker_channels.push(WorkerHandle {
+                is_working: false,
+                rx: worker_rx,
+                tx: master_tx,
+            });
+        }
+
+        let worker_join_handle = join_all(worker_futures);
+        let master_handle =
+            self.start_master(worker_channels, UrlFilter::new(self.filter.clone(), &roots));
+
+        join!(worker_join_handle, master_handle);
     }
 }

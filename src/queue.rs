@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use url::{Origin, Url};
 
-use crate::rules::CrawledUrl;
+use crate::filter::CrawledUrl;
 
 /// A data structure representing a queue of links that should be crawled.
 pub struct CrawlerQueue {
@@ -27,8 +27,8 @@ impl CrawlerQueue {
             allowed_by_robots: Default::default(),
             require_robots,
             robots_skip: 0,
-            max_origin_depth: None,
-            max_depth: None,
+            max_origin_depth,
+            max_depth,
         }
     }
 
