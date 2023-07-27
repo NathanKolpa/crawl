@@ -1,3 +1,5 @@
+use std::pin::Pin;
+
 use futures::future::{join_all, select_all};
 use futures::join;
 use reqwest::{Client, ClientBuilder};
@@ -25,7 +27,6 @@ enum WorkerMessage {
 
 struct WorkerHandle {
     tx: mpsc::Sender<MasterMessage>,
-    rx: mpsc::Receiver<WorkerMessage>,
     is_working: bool,
 }
 
@@ -59,7 +60,12 @@ impl<T> Crawler<T> {
 }
 
 impl<T: FnMut(CrawlerMessage)> Crawler<T> {
-    async fn start_master(&mut self, mut workers: Vec<WorkerHandle>, rules: UrlFilter<'_>) {
+    async fn start_master(
+        &mut self,
+        mut workers: Vec<WorkerHandle>,
+        mut worker_channel: mpsc::Receiver<(usize, WorkerMessage)>,
+        rules: UrlFilter<'_>,
+    ) {
         let mut active_workers = 0;
 
         // TODO: len() does not give the correct behaviour
@@ -85,18 +91,7 @@ impl<T: FnMut(CrawlerMessage)> Crawler<T> {
 
             // Dispatching a new job won't do anything, instead we wait for messages.
             if (!has_next_url || active_workers == self.max_jobs) && active_workers != 0 {
-                let worker_recvs = workers
-                    .iter_mut()
-                    .enumerate()
-                    .filter(|(_, x)| x.is_working)
-                    .map(|(i, x)| {
-                        // TODO: can we remove this box pin?
-                        Box::pin(async move { (x.rx.recv().await, i) })
-                    });
-
-                let ((message, i), _, _remaining) = select_all(worker_recvs).await;
-                drop(_remaining);
-                let message = message.unwrap();
+                let (i, message) = worker_channel.recv().await.unwrap();
 
                 workers[i].is_working = false;
                 active_workers -= 1;
@@ -113,8 +108,9 @@ impl<T: FnMut(CrawlerMessage)> Crawler<T> {
     }
 
     async fn start_worker(
+        id: usize,
         http_client: &Client,
-        tx: mpsc::Sender<WorkerMessage>,
+        tx: mpsc::Sender<(usize, WorkerMessage)>,
         mut rx: mpsc::Receiver<MasterMessage>,
     ) {
         let link_fetcher = LinkFetcher::new(http_client);
@@ -126,8 +122,8 @@ impl<T: FnMut(CrawlerMessage)> Crawler<T> {
                     let result = link_fetcher.fetch_links(&url).await;
 
                     match result {
-                        Ok(urls) => tx.send(WorkerMessage::Success(urls)).await.unwrap(),
-                        Err(e) => tx.send(WorkerMessage::Failure(e)).await.unwrap(),
+                        Ok(urls) => tx.send((id, WorkerMessage::Success(urls))).await.unwrap(),
+                        Err(e) => tx.send((id, WorkerMessage::Failure(e))).await.unwrap(),
                     }
                 }
             }
@@ -146,23 +142,25 @@ impl<T: FnMut(CrawlerMessage)> Crawler<T> {
 
         let mut worker_futures = Vec::with_capacity(self.max_jobs);
         let mut worker_channels = Vec::with_capacity(self.max_jobs);
+        let (worker_tx, worker_rx) = mpsc::channel::<(usize, WorkerMessage)>(1);
 
-        for _ in 0..self.max_jobs {
+        for i in 0..self.max_jobs {
             let (master_tx, master_rx) = mpsc::channel::<MasterMessage>(1);
-            let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>(1);
 
-            worker_futures.push(Self::start_worker(&client, worker_tx, master_rx));
+            worker_futures.push(Self::start_worker(i, &client, worker_tx.clone(), master_rx));
 
             worker_channels.push(WorkerHandle {
                 is_working: false,
-                rx: worker_rx,
                 tx: master_tx,
             });
         }
 
         let worker_join_handle = join_all(worker_futures);
-        let master_handle =
-            self.start_master(worker_channels, UrlFilter::new(self.filter.clone(), &roots));
+        let master_handle = self.start_master(
+            worker_channels,
+            worker_rx,
+            UrlFilter::new(self.filter.clone(), &roots),
+        );
 
         join!(worker_join_handle, master_handle);
     }
